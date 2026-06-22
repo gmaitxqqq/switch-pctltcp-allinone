@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include "http_server.h"
 
 // ---- Constants ----
 #define PT_DAY_NOLIMIT 0xFFFFu
@@ -736,6 +737,7 @@ static void menuClearPlayTimer(void)
 int main(int argc, char **argv)
 {
     consoleInit(NULL);
+    socketInitializeDefault();
 
     // Show splash immediately
     consoleClear();
@@ -802,6 +804,11 @@ int main(int argc, char **argv)
             }
         }
     }
+
+    /* Start HTTP server */
+    http_server_start();
+    printf("\n   HTTP server started on port %d\n", 8000);
+    consoleFlush();
 
     int cursor = 0;
     const int menu_count = 8;
