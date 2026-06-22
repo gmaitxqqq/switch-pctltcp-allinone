@@ -1,0 +1,49 @@
+name: Build Parental Control Manager v11
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+      env:
+        DEVKITPRO: /opt/devkitpro
+        DEVKITA64: /opt/devkitpro/devkitA64
+        PATH: /opt/devkitpro/devkitA64/bin:/opt/devkitpro/tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          echo "DEVKITPRO=$DEVKITPRO"
+          aarch64-none-elf-gcc --version
+          ls $DEVKITPRO/libnx/include/switch.h && echo "libnx found"
+          which nacptool && echo "nacptool found"
+          which elf2nro && echo "elf2nro found"
+
+      - name: Build NRO
+        run: |
+          make clean 2>/dev/null || true
+          make
+
+      - name: List outputs
+        run: |
+          echo "=== Build outputs ==="
+          ls -lh *.nro 2>/dev/null || echo "No .nro found"
+          ls -lh *.elf 2>/dev/null || echo "No .elf found"
+
+      - name: Upload NRO
+        uses: actions/upload-artifact@v4
+        with:
+          name: parental_control_manager_v11
+          path: parental_control_manager.nro
+          retention-days: 30
