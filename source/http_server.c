@@ -3,10 +3,12 @@
  *
  * REST API:
  *   GET  /              -> Embedded HTML UI (中文)
- *   GET  /api/status    -> JSON: {daily_limit_min, remaining_min, played_min, today, today_name, version}
+ *   GET  /api/status    -> JSON: {daily_limit_min, remaining_min, played_min,
+ *                                today, today_name, restriction_enabled, version}
  *   POST /api/allow     -> Add minutes to today's limit (additive)
  *                          body: minutes=N
- *   Version: v11.6
+ *   POST /api/toggle    -> Toggle restriction on/off
+ *   Version: v11.7
  *
  * NRO version: no sysmodule dependencies (no heartbeat_client, no tunnel_pctl_lock)
  * Uses pctl_handler.c for all pctl IPC calls.
@@ -75,6 +77,7 @@ static void api_status(int fd)
     u32 remaining_min = 0;
     u32 played_min    = 0;
     int today = 0;
+    bool restriction_enabled = false;
 
     Result rc = pctl_init();
     if (R_SUCCEEDED(rc)) {
@@ -85,15 +88,17 @@ static void api_status(int fd)
                       (u32)(remaining_ns / 60000000000ULL);
         played_min    = (daily_limit > remaining_min) ? (daily_limit - remaining_min) : 0;
         today = pctl_get_today_day();
+        pctl_is_restriction_enabled(&restriction_enabled);
         pctl_exit();
     }
 
-    char json[256];
+    char json[512];
     static const char *day_names[] = {"周日","周一","周二","周三","周四","周五","周六"};
     snprintf(json, sizeof(json),
-        "{\"daily_limit_min\":%u,\"remaining_min\":%u,\"played_min\":%u,\"today\":%d,\"today_name\":\"%s\",\"version\":\"v11.6\"}",
+        "{\"daily_limit_min\":%u,\"remaining_min\":%u,\"played_min\":%u,\"today\":%d,\"today_name\":\"%s\",\"restriction_enabled\":%s,\"version\":\"v11.7\"}",
         daily_limit, remaining_min, played_min, today,
-        (today >= 0 && today < 7) ? day_names[today] : "Unknown");
+        (today >= 0 && today < 7) ? day_names[today] : "Unknown",
+        restriction_enabled ? "true" : "false");
 
     http_send(fd, "200 OK", "application/json", json);
 }
@@ -139,6 +144,35 @@ static void api_allow(int fd, const char *body)
     http_send(fd, "200 OK", "application/json", json);
 }
 
+static void api_toggle_restriction(int fd)
+{
+    Result rc = pctl_init();
+    if (R_FAILED(rc)) {
+        http_send(fd, "200 OK", "application/json",
+                  "{\"success\":0,\"error\":\"pctl_init_failed\"}");
+        return;
+    }
+
+    bool enabled = false;
+    pctl_is_restriction_enabled(&enabled);
+    rc = pctl_set_restriction_enabled(!enabled);
+
+    /* Read back actual state after setting */
+    bool new_enabled = enabled;
+    if (R_SUCCEEDED(rc)) {
+        pctl_is_restriction_enabled(&new_enabled);
+    }
+
+    pctl_exit();
+
+    char json[128];
+    snprintf(json, sizeof(json),
+             "{\"success\":%d,\"enabled\":%s}",
+             R_SUCCEEDED(rc) ? 1 : 0,
+             new_enabled ? "true" : "false");
+    http_send(fd, "200 OK", "application/json", json);
+}
+
 /* Embedded Web UI (中文) */
 static const char *WEB_HTML =
 "<!DOCTYPE html>"
@@ -146,7 +180,7 @@ static const char *WEB_HTML =
 "<head>"
 "<meta charset='UTF-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-"<title>Switch 家长控制 v11.6</title>"
+"<title>Switch 家长控制 v11.7</title>"
 "<style>"
 "body{font-family:sans-serif;background:#1a1a2e;color:#fff;text-align:center;padding:20px;margin:0}"
 ".box{background:rgba(255,255,255,0.1);border-radius:12px;padding:20px;margin:15px 0}"
@@ -162,16 +196,33 @@ static const char *WEB_HTML =
 ".btn-minus{background:#7f1d1d;font-size:0.9em;padding:8px 14px}"
 "#msg{margin-top:8px;color:#fbbf24;font-size:0.9em;min-height:20px}"
 ".badge{display:inline-block;background:#10b981;color:#fff;font-size:0.7em;padding:2px 8px;border-radius:10px;margin-left:8px}"
+/* Toggle switch */
+".switch{position:relative;display:inline-block;width:50px;height:26px;margin:10px auto;vertical-align:middle}"
+".switch input{opacity:0;width:0;height:0}"
+".slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#374151;border-radius:26px;transition:.3s}"
+".slider:before{position:absolute;content:'';height:20px;width:20px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s}"
+"input:checked+.slider{background:#10b981}"
+"input:checked+.slider:before{transform:translateX(24px)}"
 "</style>"
 "</head>"
 "<body>"
-"<h2>Switch 家长控制 <small>v11.6</small> <span class='badge'>LAN</span></h2>"
+"<h2>Switch 家长控制 <small>v11.7</small> <span class='badge'>LAN</span></h2>"
 "<div class='box'>"
 "<div class='row'>"
 "<div class='tile'><div class='lbl'>已玩时间</div><div class='big' id='played'>--</div></div>"
 "<div class='tile'><div class='lbl'>剩余时间</div><div class='big' id='remain'>--</div></div>"
 "</div>"
 "<div class='lbl' style='margin-top:4px'>今日限制: <span id='limit'>--</span> 分钟</div>"
+"</div>"
+"<div class='box'>"
+"<div style='display:flex;align-items:center;justify-content:center;gap:12px'>"
+"<span class='lbl'>家长控制</span>"
+"<label class='switch'>"
+"<input type='checkbox' id='toggleSw' onchange='toggleRestriction()'>"
+"<span class='slider'></span>"
+"</label>"
+"<span id='toggleLabel' class='lbl'>已禁用</span>"
+"</div>"
 "</div>"
 "<div class='box'>"
 "<div class='lbl'>追加/减少时间 (分钟)</div>"
@@ -194,6 +245,8 @@ static const char *WEB_HTML =
 "document.getElementById('limit').textContent=d.daily_limit_min;"
 "document.getElementById('remain').textContent=d.remaining_min+'m';"
 "document.getElementById('played').textContent=d.played_min+'m';"
+"document.getElementById('toggleSw').checked=d.restriction_enabled;"
+"document.getElementById('toggleLabel').textContent=d.restriction_enabled?'已启用':'已禁用';"
 "}).catch(()=>{document.getElementById('msg').textContent='加载失败'});"
 "}"
 "function quickSet(m){"
@@ -205,6 +258,15 @@ static const char *WEB_HTML =
 "fetch('/api/allow',{method:'POST',body:'minutes='+m}).then(r=>r.json()).then(d=>{"
 "document.getElementById('msg').textContent=d.success?'完成!':'失败';"
 "setTimeout(function(){document.getElementById('msg').textContent='';load();},1200);"
+"}).catch(()=>{document.getElementById('msg').textContent='错误'});"
+"}"
+"function toggleRestriction(){"
+"document.getElementById('msg').textContent='保存中...';"
+"fetch('/api/toggle',{method:'POST'}).then(r=>r.json()).then(d=>{"
+"document.getElementById('toggleSw').checked=d.enabled;"
+"document.getElementById('toggleLabel').textContent=d.enabled?'已启用':'已禁用';"
+"document.getElementById('msg').textContent=d.success?'完成!':'失败';"
+"setTimeout(function(){document.getElementById('msg').textContent='';},1200);"
 "}).catch(()=>{document.getElementById('msg').textContent='错误'});"
 "}"
 "load();"
@@ -240,6 +302,8 @@ static void handle_request(int fd)
         api_status(fd);
     } else if (strcmp(path, "/api/allow") == 0 && strcmp(method, "POST") == 0) {
         api_allow(fd, body ? body : "");
+    } else if (strcmp(path, "/api/toggle") == 0 && strcmp(method, "POST") == 0) {
+        api_toggle_restriction(fd);
     } else {
         http_send(fd, "404 Not Found", "application/json", "{\"error\":\"not found\"}");
     }

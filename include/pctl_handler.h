@@ -70,6 +70,13 @@ int  pctl_get_today_day(void);
 Result pctl_reset_play_time(void);
 
 /* ------------------------------------------------------------------ */
+/* Restriction enable / disable (controls raw[1] flag)             */
+/* ------------------------------------------------------------------ */
+
+Result pctl_is_restriction_enabled(bool *enabled);
+Result pctl_set_restriction_enabled(bool enable);
+
+/* ------------------------------------------------------------------ */
 /* Timezone (used by sysmodule context; NRO can ignore)             */
 /* ------------------------------------------------------------------ */
 

@@ -772,6 +772,48 @@ static void menuClearPlayTimer(void)
     }
 }
 
+static void menuToggleRestriction(void)
+{
+    bool enabled = false;
+    Result rc = pctl_init();
+    if (R_SUCCEEDED(rc)) {
+        pctl_is_restriction_enabled(&enabled);
+        pctl_exit();
+    }
+
+    consoleClear();
+    printf("\n");
+    printSeparator();
+    printf("   Toggle Restriction\n");
+    printSeparator();
+    printf("\n");
+    printf("   Current state: %s\n\n", enabled ? "ENABLED" : "DISABLED");
+    printf("   Press A to toggle, B to cancel.\n");
+    consoleFlush();
+
+    while (appletMainLoop()) {
+        u64 k = padGetDown();
+        if (k & HidNpadButton_A) {
+            rc = pctl_init();
+            if (R_SUCCEEDED(rc)) {
+                rc = pctl_set_restriction_enabled(!enabled);
+                pctl_exit();
+            }
+            consoleClear();
+            printf("\n");
+            if (R_SUCCEEDED(rc))
+                printf("   Restriction %s!\n", !enabled ? "ENABLED" : "DISABLED");
+            else
+                printf("   Failed: 0x%08X\n", (unsigned)rc);
+            waitForKey();
+            break;
+        }
+        if (k & HidNpadButton_B) break;
+        consoleFlush();
+        svcSleepThread(10000000ULL);
+    }
+}
+
 // ---- Main Menu ----
 
 int main(int argc, char **argv)
@@ -857,7 +899,7 @@ int main(int argc, char **argv)
     }
 
     int cursor = 0;
-    const int menu_count = 8;
+    const int menu_count = 9;
     const char *menu_items[] = {
         "View Current Status",
         "Set / Change PIN",
@@ -867,6 +909,7 @@ int main(int argc, char **argv)
         "Clear Play Time Limits",
         "Delete Parental Controls",
         "Delete Phone Pairing",
+        "Toggle Restriction (on/off)",
     };
 
     // Main loop
@@ -913,6 +956,7 @@ int main(int argc, char **argv)
                 case 5: menuClearPlayTimer(); break;
                 case 6: menuDeleteParentalControls(); break;
                 case 7: menuDeletePairing(); break;
+                case 8: menuToggleRestriction(); break;
             }
         }
 

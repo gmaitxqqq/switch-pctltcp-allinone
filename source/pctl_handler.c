@@ -361,3 +361,39 @@ Result pctl_reset_play_time(void)
 
     return 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* Restriction enable/disable                                          */
+/* ------------------------------------------------------------------ */
+
+Result pctl_is_restriction_enabled(bool *enabled)
+{
+    if (!enabled) return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+
+    PlayTimerSettings settings;
+    Result rc = pctl_get_settings(&settings);
+    if (R_FAILED(rc)) return rc;
+
+    /* raw[1] = 0x0001 means restriction enabled */
+    *enabled = (settings.raw[1] == 0x0001);
+    return 0;
+}
+
+Result pctl_set_restriction_enabled(bool enable)
+{
+    PlayTimerSettings settings;
+    Result rc = pctl_get_settings(&settings);
+    if (R_FAILED(rc)) return rc;
+
+    if (enable) {
+        /* Enable: set header valid and restriction flag */
+        if (settings.raw[0] == 0)
+            settings.raw[0] = 0x0101;
+        settings.raw[1] = 0x0001;
+    } else {
+        /* Disable: clear restriction flag (keep settings, just don't enforce) */
+        settings.raw[1] = 0x0000;
+    }
+
+    return pctl_set_settings(&settings);
+}
