@@ -366,18 +366,8 @@ Result pctl_reset_play_time(void)
 /* Restriction enable/disable                                          */
 /* ------------------------------------------------------------------ */
 
-Result pctl_is_restriction_enabled(bool *enabled)
-{
-    if (!enabled) return MAKERESULT(Module_Libnx, LibnxError_BadInput);
-
-    PlayTimerSettings settings;
-    Result rc = pctl_get_settings(&settings);
-    if (R_FAILED(rc)) return rc;
-
-    /* raw[1] = 0x0001 means restriction enabled */
-    *enabled = (settings.raw[1] == 0x0001);
-    return 0;
-}
+/* pctlIsRestrictionEnabled() is provided by libnx official pctl.h */
+/* This function only handles writing the raw[1] flag.               */
 
 Result pctl_set_restriction_enabled(bool enable)
 {

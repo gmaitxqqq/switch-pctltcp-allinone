@@ -88,7 +88,7 @@ static void api_status(int fd)
                       (u32)(remaining_ns / 60000000000ULL);
         played_min    = (daily_limit > remaining_min) ? (daily_limit - remaining_min) : 0;
         today = pctl_get_today_day();
-        pctl_is_restriction_enabled(&restriction_enabled);
+        pctlIsRestrictionEnabled(&restriction_enabled);
         pctl_exit();
     }
 
@@ -154,13 +154,13 @@ static void api_toggle_restriction(int fd)
     }
 
     bool enabled = false;
-    pctl_is_restriction_enabled(&enabled);
+    pctlIsRestrictionEnabled(&enabled);
     rc = pctl_set_restriction_enabled(!enabled);
 
     /* Read back actual state after setting */
     bool new_enabled = enabled;
     if (R_SUCCEEDED(rc)) {
-        pctl_is_restriction_enabled(&new_enabled);
+        pctlIsRestrictionEnabled(&new_enabled);
     }
 
     pctl_exit();

@@ -777,7 +777,7 @@ static void menuToggleRestriction(void)
     bool enabled = false;
     Result rc = pctl_init();
     if (R_SUCCEEDED(rc)) {
-        pctl_is_restriction_enabled(&enabled);
+        pctlIsRestrictionEnabled(&enabled);
         pctl_exit();
     }
 
