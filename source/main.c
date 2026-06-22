@@ -774,11 +774,12 @@ static void menuClearPlayTimer(void)
 
 static void menuToggleRestriction(void)
 {
-    bool enabled = false;
+    /* Use a single pctl init scope for the entire operation */
     Result rc = pctl_init();
+    bool enabled = false;
+
     if (R_SUCCEEDED(rc)) {
         pctlIsRestrictionEnabled(&enabled);
-        pctl_exit();
     }
 
     consoleClear();
@@ -787,17 +788,18 @@ static void menuToggleRestriction(void)
     printf("   Toggle Restriction\n");
     printSeparator();
     printf("\n");
-    printf("   Current state: %s\n\n", enabled ? "ENABLED" : "DISABLED");
+    if (R_SUCCEEDED(rc))
+        printf("   Current state: %s\n\n", enabled ? "ENABLED" : "DISABLED");
+    else
+        printf("   Failed to read state: 0x%08X\n\n", (unsigned)rc);
     printf("   Press A to toggle, B to cancel.\n");
     consoleFlush();
 
     while (appletMainLoop()) {
         u64 k = padGetDown();
         if (k & HidNpadButton_A) {
-            rc = pctl_init();
             if (R_SUCCEEDED(rc)) {
                 rc = pctl_set_restriction_enabled(!enabled);
-                pctl_exit();
             }
             consoleClear();
             printf("\n");
@@ -812,6 +814,10 @@ static void menuToggleRestriction(void)
         consoleFlush();
         svcSleepThread(10000000ULL);
     }
+
+    /* Clean up pctl - only if we initialized it */
+    if (R_SUCCEEDED(rc))
+        pctl_exit();
 }
 
 // ---- Main Menu ----
@@ -870,6 +876,7 @@ int main(int argc, char **argv)
         if (!pinEntryScreen(system_pin, system_pin_len)) {
             // Wrong PIN or user chose to exit
             http_server_stop();
+            svcSleepThread(500000000ULL);
             if (R_SUCCEEDED(pctl_rc)) pctlExit();
             socketExit();
             consoleExit(NULL);
@@ -890,6 +897,7 @@ int main(int argc, char **argv)
 
             if (!pinEntryScreen(DEFAULT_PIN, strlen(DEFAULT_PIN))) {
                 http_server_stop();
+                svcSleepThread(500000000ULL);
                 if (R_SUCCEEDED(pctl_rc)) pctlExit();
                 socketExit();
                 consoleExit(NULL);
@@ -964,6 +972,8 @@ int main(int argc, char **argv)
     }
 
     http_server_stop();
+    /* Give the system time to fully clean up threads/sockets */
+    svcSleepThread(500000000ULL);
     if (R_SUCCEEDED(pctl_rc)) pctlExit();
     socketExit();
     consoleExit(NULL);

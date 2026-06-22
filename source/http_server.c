@@ -8,15 +8,14 @@
  *   POST /api/allow     -> Add minutes to today's limit (additive)
  *                          body: minutes=N
  *   POST /api/toggle    -> Toggle restriction on/off
- *   Version: v11.7
  *
- * NRO version: no sysmodule dependencies (no heartbeat_client, no tunnel_pctl_lock)
- * Uses pctl_handler.c for all pctl IPC calls.
+ * NRO version: uses libnx Thread API (NOT pthread) for compatibility.
  */
+
 #include "http_server.h"
 #include "pctl_handler.h"
 
-/* Forward declaration in case header not found by compiler */
+/* Forward declaration */
 Result pctl_set_restriction_enabled(bool enable);
 
 #include <string.h>
@@ -26,16 +25,14 @@ Result pctl_set_restriction_enabled(bool enable);
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <pthread.h>
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
 static volatile int  s_server_fd    = -1;
-static volatile int  s_client_fd    = -1;
 static volatile bool s_running      = false;
-static volatile bool s_thread_alive = false;
-static pthread_t s_thread;
+static Thread       s_thread;
+static volatile bool s_thread_exited = false;
 
 /* ------------------------------------------------------------------ */
 /* HTTP helpers                                                        */
@@ -149,6 +146,7 @@ static void api_allow(int fd, const char *body)
 
 static void api_toggle_restriction(int fd)
 {
+    /* Use a single init scope for all pctl operations */
     Result rc = pctl_init();
     if (R_FAILED(rc)) {
         http_send(fd, "200 OK", "application/json",
@@ -158,6 +156,8 @@ static void api_toggle_restriction(int fd)
 
     bool enabled = false;
     pctlIsRestrictionEnabled(&enabled);
+
+    /* Call our custom set function (it does its own reinit inside) */
     rc = pctl_set_restriction_enabled(!enabled);
 
     /* Read back actual state after setting */
@@ -199,7 +199,6 @@ static const char *WEB_HTML =
 ".btn-minus{background:#7f1d1d;font-size:0.9em;padding:8px 14px}"
 "#msg{margin-top:8px;color:#fbbf24;font-size:0.9em;min-height:20px}"
 ".badge{display:inline-block;background:#10b981;color:#fff;font-size:0.7em;padding:2px 8px;border-radius:10px;margin-left:8px}"
-/* Toggle switch */
 ".switch{position:relative;display:inline-block;width:50px;height:26px;margin:10px auto;vertical-align:middle}"
 ".switch input{opacity:0;width:0;height:0}"
 ".slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#374151;border-radius:26px;transition:.3s}"
@@ -252,9 +251,7 @@ static const char *WEB_HTML =
 "document.getElementById('toggleLabel').textContent=d.restriction_enabled?'已启用':'已禁用';"
 "}).catch(()=>{document.getElementById('msg').textContent='加载失败'});"
 "}"
-"function quickSet(m){"
-"document.getElementById('min').value=m;"
-"}"
+"function quickSet(m){document.getElementById('min').value=m;}"
 "function allow(){"
 "var m=parseInt(document.getElementById('min').value)||0;"
 "document.getElementById('msg').textContent='保存中...';"
@@ -272,8 +269,7 @@ static const char *WEB_HTML =
 "setTimeout(function(){document.getElementById('msg').textContent='';},1200);"
 "}).catch(()=>{document.getElementById('msg').textContent='错误'});"
 "}"
-"load();"
-"setInterval(load,30000);"
+"load();setInterval(load,30000);"
 "</script>"
 "</body>"
 "</html>";
@@ -315,9 +311,13 @@ static void handle_request(int fd)
 }
 
 /* ------------------------------------------------------------------ */
-/* Server thread                                                       */
+/* Server thread (uses libnx Thread API, NOT pthread)                   */
 /* ------------------------------------------------------------------ */
-static void *http_thread_func(void *arg)
+
+/* Large stack for the HTTP thread to handle request processing */
+#define HTTP_THREAD_STACK_SIZE  0x40000  /* 256 KB */
+
+static void http_thread_func(void *arg)
 {
     (void)arg;
 
@@ -357,14 +357,11 @@ static void *http_thread_func(void *arg)
             setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo));
             setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tmo, sizeof(tmo));
 
-            s_client_fd = client_fd;
             handle_request(client_fd);
-            s_client_fd = -1;
         }
     }
 
-    s_thread_alive = false;
-    return NULL;
+    s_thread_exited = true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -382,7 +379,7 @@ static int create_server_socket(void)
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(8081);
+    addr.sin_port        = htons(HTTP_PORT);
     addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
@@ -400,7 +397,8 @@ static int create_server_socket(void)
 
 void http_server_start(void)
 {
-    if (s_thread_alive) {
+    if (s_running) {
+        /* Already running, just make sure socket is valid */
         if (s_server_fd < 0) {
             int fd = create_server_socket();
             if (fd >= 0) s_server_fd = fd;
@@ -411,66 +409,37 @@ void http_server_start(void)
     int fd = create_server_socket();
     if (fd < 0) return;
 
-    s_server_fd = fd;
-    s_running   = true;
+    s_server_fd    = fd;
+    s_running      = true;
+    s_thread_exited = false;
 
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 0x10000);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_create(&s_thread, &attr, http_thread_func, NULL);
-    s_thread_alive = true;
-    pthread_attr_destroy(&attr);
+    threadCreate(&s_thread, http_thread_func, NULL, NULL, HTTP_THREAD_STACK_SIZE, 0x2C, -2);
+    threadStart(&s_thread);
 }
 
 void http_server_stop(void)
 {
     s_running = false;
 
-    if (s_client_fd >= 0) {
-        shutdown(s_client_fd, SHUT_RDWR);
-    }
-
     if (s_server_fd >= 0) {
         int fd = s_server_fd;
         s_server_fd = -1;
+        shutdown(fd, SHUT_RDWR);
         close(fd);
     }
 
-    if (s_thread_alive) {
-        for (int i = 0; i < 50 && s_thread_alive; i++) {
-            svcSleepThread(100000000ULL);
+    /* Wait for thread to finish with generous timeout */
+    if (!s_thread_exited) {
+        for (int i = 0; i < 100 && !s_thread_exited; i++) {
+            svcSleepThread(100000000ULL);  /* 100ms x 100 = 10s max */
         }
     }
-}
 
-void http_server_restart(void)
-{
-    if (s_client_fd >= 0) {
-        shutdown(s_client_fd, SHUT_RDWR);
-    }
-
-    if (s_server_fd >= 0) {
-        int old_fd = s_server_fd;
-        s_server_fd = -1;
-        close(old_fd);
-        svcSleepThread(100000000ULL);
-    }
-
-    int new_fd = create_server_socket();
-    if (new_fd < 0) return;
-
-    s_server_fd = new_fd;
-
-    if (!s_thread_alive) {
-        s_running = true;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setstacksize(&attr, 0x10000);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_create(&s_thread, &attr, http_thread_func, NULL);
-        s_thread_alive = true;
-        pthread_attr_destroy(&attr);
+    /* Force-join the thread if still alive */
+    if (!s_thread_exited) {
+        threadWaitForExit(&s_thread);
+        threadClose(&s_thread);
+        s_thread_exited = true;
     }
 }
 

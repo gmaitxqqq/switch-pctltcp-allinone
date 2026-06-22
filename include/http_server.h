@@ -19,7 +19,6 @@ extern "C" {
 
 void http_server_start(void);
 void http_server_stop(void);
-void http_server_restart(void);
 bool http_server_is_running(void);
 
 #ifdef __cplusplus
