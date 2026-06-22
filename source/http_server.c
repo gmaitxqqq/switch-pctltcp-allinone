@@ -16,6 +16,9 @@
 #include "http_server.h"
 #include "pctl_handler.h"
 
+/* Forward declaration in case header not found by compiler */
+Result pctl_set_restriction_enabled(bool enable);
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>

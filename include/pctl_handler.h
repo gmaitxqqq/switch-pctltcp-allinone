@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
