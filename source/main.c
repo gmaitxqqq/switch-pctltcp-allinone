@@ -22,6 +22,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 #include "pctl_handler.h"
 #include "http_server.h"
 
@@ -235,6 +239,39 @@ static u64 padGetDown(void)
 {
     padUpdate(&g_pad);
     return padGetButtonsDown(&g_pad);
+}
+
+// ---- Get local IP address ----
+// Uses the connect()+getsockname() trick to get the local IP
+// without needing to know the interface name.
+static void show_local_ip(void)
+{
+    int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s < 0) {
+        printf("   HTTP server: http://<Switch IP>:8081\n");
+        return;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(53);
+    inet_pton(AF_INET, "8.8.8.8", &addr.sin_addr);
+
+    if (connect(s, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+        struct sockaddr_in local_addr;
+        socklen_t len = sizeof(local_addr);
+        memset(&local_addr, 0, sizeof(local_addr));
+        if (getsockname(s, (struct sockaddr*)&local_addr, &len) == 0) {
+            char *ip_str = inet_ntoa(local_addr.sin_addr);
+            printf("   HTTP server: http://%s:8081\n", ip_str);
+        } else {
+            printf("   HTTP server: http://<Switch IP>:8081\n");
+        }
+    } else {
+        printf("   HTTP server: http://<Switch IP>:8081\n");
+    }
+    close(s);
 }
 
 // ---- UI Helpers ----
@@ -751,11 +788,13 @@ int main(int argc, char **argv)
     consoleClear();
     printf("\n");
     printSeparator();
-    printf("   Switch Parental Control Manager\n");
-    printf("   v11.5 - fw 22.1.0 compatible\n");
+    printf("   PCTL All-in-One v1.0.0\n");
+    printf("   Console + Web UI\n");
     printSeparator();
     printf("\n");
     printf("   Initializing...\n");
+    show_local_ip();
+    printf("\n");
     consoleFlush();
 
     // Initialize pad
@@ -837,8 +876,8 @@ int main(int argc, char **argv)
         consoleClear();
         printf("\n");
         printSeparator();
-        printf("   Switch Parental Control Manager\n");
-        printf("   v11.5 - fw 22.1.0 compatible\n");
+        printf("   PCTL All-in-One v1.0.0\n");
+        printf("   Console + Web UI (port 8081)\n");
         printSeparator();
         printf("\n");
 
