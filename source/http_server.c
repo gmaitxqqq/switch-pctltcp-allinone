@@ -1,23 +1,18 @@
 /**
- * http_server.c - Minimal HTTP server for Switch parental control
+ * http_server.c - Minimal HTTP server for Switch parental control (NRO version)
  *
  * REST API:
- *   GET  /              -> Embedded HTML UI
+ *   GET  /              -> Embedded HTML UI (中文)
  *   GET  /api/status    -> JSON: {daily_limit_min, remaining_min, played_min, today, today_name, version}
  *   POST /api/allow     -> Add minutes to today's limit (additive)
  *                          body: minutes=N
- *                          calc: new_limit = current_limit + N
- *   Version: v1.7.1
+ *   Version: v11.6
  *
- * Architecture: The HTTP thread runs for the entire lifetime of the sysmodule.
- * It never stops and restarts — instead, http_server_restart() simply closes
- * the old server socket and creates a new one. The thread picks up the new fd
- * on its next select() iteration. This eliminates all thread lifecycle bugs
- * (pthread_join crashes, fd reuse, generation guard races, etc.).
+ * NRO version: no sysmodule dependencies (no heartbeat_client, no tunnel_pctl_lock)
+ * Uses pctl_handler.c for all pctl IPC calls.
  */
 #include "http_server.h"
 #include "pctl_handler.h"
-#include "heartbeat_client.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -28,17 +23,13 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 
-/* Forward declaration — defined in main.c. NOT variadic! */
-extern void log_msg(const char *msg);
-
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
-static volatile int  s_server_fd    = -1;   /* server listen socket   */
-static volatile int  s_client_fd    = -1;   /* current client socket  */
+static volatile int  s_server_fd    = -1;
+static volatile int  s_client_fd    = -1;
 static volatile bool s_running      = false;
-static volatile bool s_thread_alive = false; /* thread exists & looping */
-static volatile u32  s_thread_loop_count = 0; /* incremented each loop iteration */
+static volatile bool s_thread_alive = false;
 static pthread_t s_thread;
 
 /* ------------------------------------------------------------------ */
@@ -49,7 +40,7 @@ static void http_send(int fd, const char *status, const char *ctype, const char 
     char header[512];
     int hlen = snprintf(header, sizeof(header),
         "HTTP/1.1 %s\r\n"
-        "Content-Type: %s\r\n"
+        "Content-Type: %s; charset=utf-8\r\n"
         "Access-Control-Allow-Origin: *\r\n"
         "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
         "Access-Control-Allow-Headers: Content-Type\r\n"
@@ -77,15 +68,6 @@ static int http_read_request(int fd, char *buf, int bufsize)
 /* ------------------------------------------------------------------ */
 /* API handlers                                                        */
 /* ------------------------------------------------------------------ */
-static u32 clamp_remaining_min(u64 remaining_ns)
-{
-    if (remaining_ns == 0)
-        return 0;
-    if (remaining_ns > 86400000000000ULL)
-        return 0;
-    return (u32)NS_TO_MINUTES(remaining_ns);
-}
-
 static void api_status(int fd)
 {
     u64 remaining_ns = 0;
@@ -94,23 +76,24 @@ static void api_status(int fd)
     u32 played_min    = 0;
     int today = 0;
 
-    tunnel_pctl_lock();
     Result rc = pctl_init();
     if (R_SUCCEEDED(rc)) {
         pctl_get_remaining_time(&remaining_ns);
         pctl_get_daily_limit_minutes(&daily_limit);
-        remaining_min = clamp_remaining_min(remaining_ns);
+        remaining_min = (remaining_ns == 0) ? 0u :
+                      (remaining_ns > 86400000000000ULL) ? 0u :
+                      (u32)(remaining_ns / 60000000000ULL);
         played_min    = (daily_limit > remaining_min) ? (daily_limit - remaining_min) : 0;
         today = pctl_get_today_day();
         pctl_exit();
     }
-    tunnel_pctl_unlock();
 
     char json[256];
-    static const char *day_names[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+    static const char *day_names[] = {"周日","周一","周二","周三","周四","周五","周六"};
     snprintf(json, sizeof(json),
-        "{\"daily_limit_min\":%u,\"remaining_min\":%u,\"played_min\":%u,\"today\":%d,\"today_name\":\"%s\",\"version\":\"v1.7.1\"}",
-        daily_limit, remaining_min, played_min, today, day_names[today]);
+        "{\"daily_limit_min\":%u,\"remaining_min\":%u,\"played_min\":%u,\"today\":%d,\"today_name\":\"%s\",\"version\":\"v11.6\"}",
+        daily_limit, remaining_min, played_min, today,
+        (today >= 0 && today < 7) ? day_names[today] : "Unknown");
 
     http_send(fd, "200 OK", "application/json", json);
 }
@@ -118,16 +101,14 @@ static void api_status(int fd)
 static void api_allow(int fd, const char *body)
 {
     int allow_min = 0;
-    const char *p = strstr(body, "minutes");
+    const char *p = strstr(body, "minutes=");
     if (p) {
-        p = strchr(p + 7, '=');
-        if (p) allow_min = atoi(p + 1);  /* 支持负数：减时间 */
+        allow_min = atoi(p + 8);
     }
 
-    tunnel_pctl_lock();
     Result rc = pctl_init();
     if (R_FAILED(rc)) {
-        tunnel_pctl_unlock();
+        pctl_exit();
         http_send(fd, "200 OK", "application/json", "{\"success\":0,\"error\":\"pctl_init_failed\"}");
         return;
     }
@@ -140,39 +121,34 @@ static void api_allow(int fd, const char *body)
         u32 daily_limit = 0;
         pctl_get_daily_limit_minutes(&daily_limit);
 
-        /* 用 int 计算，支持负数减时间，然后 clamp 到 [0, 1440] */
         int new_limit = (int)daily_limit + allow_min;
         if (new_limit < 0) new_limit = 0;
         if (new_limit > 1440) new_limit = 1440;
 
         rc = pctl_set_day_limit_minutes(today, (u32)new_limit);
-        /* 修改限额后重启计时器，强制系统用新限额重新计算剩余时间 */
         if (R_SUCCEEDED(rc)) {
             pctl_stop_play_timer();
             pctl_start_play_timer();
+            /* 设置完时间后启用限制，让倒计时真正开始 */
+            pctl_enable_restriction();
         }
     }
 
     pctl_exit();
-    tunnel_pctl_unlock();
 
     char json[128];
-    snprintf(json, sizeof(json),
-        "{\"success\":%d}",
-        R_SUCCEEDED(rc) ? 1 : 0);
-
+    snprintf(json, sizeof(json), "{\"success\":%d}", R_SUCCEEDED(rc) ? 1 : 0);
     http_send(fd, "200 OK", "application/json", json);
 }
 
-/* Embedded Web UI                                                     */
-/* ------------------------------------------------------------------ */
+/* Embedded Web UI (中文) */
 static const char *WEB_HTML =
 "<!DOCTYPE html>"
 "<html>"
 "<head>"
 "<meta charset='UTF-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-"<title>Switch Timer v1.7.1</title>"
+"<title>Switch 家长控制 v11.6</title>"
 "<style>"
 "body{font-family:sans-serif;background:#1a1a2e;color:#fff;text-align:center;padding:20px;margin:0}"
 ".box{background:rgba(255,255,255,0.1);border-radius:12px;padding:20px;margin:15px 0}"
@@ -191,16 +167,16 @@ static const char *WEB_HTML =
 "</style>"
 "</head>"
 "<body>"
-"<h2>Switch Parental Control <small>v1.7.1</small> <span class='badge'>LAN + Remote</span></h2>"
+"<h2>Switch 家长控制 <small>v11.6</small> <span class='badge'>LAN</span></h2>"
 "<div class='box'>"
 "<div class='row'>"
-"<div class='tile'><div class='lbl'>Played</div><div class='big' id='played'>--</div></div>"
-"<div class='tile'><div class='lbl'>Remaining</div><div class='big' id='remain'>--</div></div>"
+"<div class='tile'><div class='lbl'>已玩时间</div><div class='big' id='played'>--</div></div>"
+"<div class='tile'><div class='lbl'>剩余时间</div><div class='big' id='remain'>--</div></div>"
 "</div>"
-"<div class='lbl' style='margin-top:4px'>Limit: <span id='limit'>--</span> min</div>"
+"<div class='lbl' style='margin-top:4px'>今日限制: <span id='limit'>--</span> 分钟</div>"
 "</div>"
 "<div class='box'>"
-"<div class='lbl'>Allow to play (minutes)</div>"
+"<div class='lbl'>追加/减少时间 (分钟)</div>"
 "<input type='number' id='min' value='30' min='-1440' max='1440'>"
 "<br>"
 "<div class='btns'>"
@@ -211,7 +187,7 @@ static const char *WEB_HTML =
 "<button class='btn-sm' onclick='quickSet(60)'>+60</button>"
 "<button class='btn-sm' onclick='quickSet(90)'>+90</button>"
 "</div>"
-"<button onclick='allow()'>Confirm</button>"
+"<button onclick='allow()'>确认</button>"
 "<div id='msg'></div>"
 "</div>"
 "<script>"
@@ -220,18 +196,18 @@ static const char *WEB_HTML =
 "document.getElementById('limit').textContent=d.daily_limit_min;"
 "document.getElementById('remain').textContent=d.remaining_min+'m';"
 "document.getElementById('played').textContent=d.played_min+'m';"
-"}).catch(()=>{document.getElementById('msg').textContent='Load failed'});"
+"}).catch(()=>{document.getElementById('msg').textContent='加载失败'});"
 "}"
 "function quickSet(m){"
 "document.getElementById('min').value=m;"
 "}"
 "function allow(){"
 "var m=parseInt(document.getElementById('min').value)||0;"
-"document.getElementById('msg').textContent='Saving...';"
+"document.getElementById('msg').textContent='保存中...';"
 "fetch('/api/allow',{method:'POST',body:'minutes='+m}).then(r=>r.json()).then(d=>{"
-"document.getElementById('msg').textContent=d.success?'Done!':'Failed';"
+"document.getElementById('msg').textContent=d.success?'完成!':'失败';"
 "setTimeout(function(){document.getElementById('msg').textContent='';load();},1200);"
-"}).catch(()=>{document.getElementById('msg').textContent='Error'});"
+"}).catch(()=>{document.getElementById('msg').textContent='错误'});"
 "}"
 "load();"
 "setInterval(load,30000);"
@@ -261,7 +237,7 @@ static void handle_request(int fd)
     if (body) body += 4;
 
     if (strcmp(path, "/") == 0 && strcmp(method, "GET") == 0) {
-        http_send(fd, "200 OK", "text/html; charset=utf-8", WEB_HTML);
+        http_send(fd, "200 OK", "text/html", WEB_HTML);
     } else if (strcmp(path, "/api/status") == 0) {
         api_status(fd);
     } else if (strcmp(path, "/api/allow") == 0 && strcmp(method, "POST") == 0) {
@@ -274,35 +250,16 @@ static void handle_request(int fd)
 }
 
 /* ------------------------------------------------------------------ */
-/* Server thread — runs for the entire sysmodule lifetime              */
-/*                                                                      */
-/* The thread NEVER exits during normal operation. It reads s_server_fd */
-/* on each iteration. If s_server_fd == -1, it sleeps and retries.      */
-/* http_server_restart() closes the old socket and sets a new one;      */
-/* the thread picks it up automatically within one select timeout.       */
-/* This eliminates ALL thread lifecycle bugs (no stop/start, no join,   */
-/* no fd reuse, no generation guard races).                             */
+/* Server thread                                                       */
 /* ------------------------------------------------------------------ */
 static void *http_thread_func(void *arg)
 {
     (void)arg;
 
-    {
-        char m[128];
-        snprintf(m, sizeof(m), "http_thread_func: started (s_server_fd=%d)", s_server_fd);
-        log_msg(m);
-    }
-
     while (s_running) {
-        s_thread_loop_count++;
-
-        /* Read the server fd each iteration — never cached locally.
-         * This is critical: if http_server_restart() closes the old fd
-         * and creates a new one, we must see the new fd, not a stale copy. */
         int fd = s_server_fd;
         if (fd < 0) {
-            /* No server socket (between restart/close). Wait and retry. */
-            svcSleepThread(200000000ULL);  /* 200ms */
+            svcSleepThread(200000000ULL);
             continue;
         }
 
@@ -311,67 +268,48 @@ static void *http_thread_func(void *arg)
         FD_SET(fd, &rfds);
         struct timeval tv;
         tv.tv_sec  = 0;
-        tv.tv_usec = 500000;  /* 500ms — quick enough to see fd changes */
+        tv.tv_usec = 500000;
 
         int ret = select(fd + 1, &rfds, NULL, NULL, &tv);
-
-        /* Re-read s_server_fd after select — it may have changed during
-         * the select call (restart closed old fd, created new one).
-         * If it changed, the fd we passed to select is stale — skip accept. */
-        if (s_server_fd != fd) continue;
-
-        if (ret < 0) {
-            /* select error — fd was probably closed by restart().
-             * Don't exit! Just wait for the new fd. */
-            svcSleepThread(200000000ULL);
+        if (ret <= 0) {
+            if (s_server_fd != fd) continue;
+            if (ret < 0) {
+                svcSleepThread(200000000ULL);
+                continue;
+            }
             continue;
         }
-        if (ret == 0) continue;
 
         if (FD_ISSET(fd, &rfds)) {
-            /* One more check: the fd might have changed while we were
-             * in select(). If so, don't accept on the old fd. */
             if (s_server_fd != fd) continue;
 
             int client_fd = accept(fd, NULL, NULL);
-            if (client_fd < 0) continue;  /* accept error, just retry */
+            if (client_fd < 0) continue;
 
-            /* Set I/O timeouts on client socket — this is CRITICAL.
-             * Without timeouts, read() in http_read_request() can block
-             * forever if a client connects but doesn't send data (e.g.,
-             * half-open connection after sleep/wake). The thread would
-             * be stuck and unable to accept new connections. */
-            {
-                struct timeval tmo;
-                tmo.tv_sec  = 3;
-                tmo.tv_usec = 0;
-                setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo));
-                setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tmo, sizeof(tmo));
-            }
+            struct timeval tmo;
+            tmo.tv_sec  = 3;
+            tmo.tv_usec = 0;
+            setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo));
+            setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tmo, sizeof(tmo));
 
-            /* Track client fd so restart() can shutdown() it */
             s_client_fd = client_fd;
             handle_request(client_fd);
             s_client_fd = -1;
         }
     }
 
-    /* Thread is exiting (only happens on final http_server_stop) */
     s_thread_alive = false;
     return NULL;
 }
 
 /* ------------------------------------------------------------------ */
-/* Helper: create and bind a server socket on HTTP_PORT                */
-/* Returns the new fd, or -1 on failure.                               */
+/* Public API                                                          */
 /* ------------------------------------------------------------------ */
+
 static int create_server_socket(void)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        log_msg("create_server_socket: socket() failed");
-        return -1;
-    }
+    if (fd < 0) return -1;
 
     int optval = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
@@ -379,57 +317,38 @@ static int create_server_socket(void)
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(HTTP_PORT);
+    addr.sin_port        = htons(8081);
     addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        log_msg("create_server_socket: bind() failed");
         close(fd);
         return -1;
     }
 
     if (listen(fd, 4) < 0) {
-        log_msg("create_server_socket: listen() failed");
         close(fd);
         return -1;
     }
 
-    char msg[128];
-    snprintf(msg, sizeof(msg), "create_server_socket: OK (fd=%d, port=%d)", fd, HTTP_PORT);
-    log_msg(msg);
     return fd;
 }
 
-/* ------------------------------------------------------------------ */
-/* Public API                                                          */
-/* ------------------------------------------------------------------ */
-
 void http_server_start(void)
 {
-    /* If thread is already alive, just ensure there's a server socket */
     if (s_thread_alive) {
         if (s_server_fd < 0) {
             int fd = create_server_socket();
-            if (fd >= 0) {
-                s_server_fd = fd;
-                log_msg("http_server_start: new socket for running thread, OK");
-            } else {
-                log_msg("http_server_start: create_server_socket failed");
-            }
-        } else {
-            log_msg("http_server_start: already running, OK");
+            if (fd >= 0) s_server_fd = fd;
         }
         return;
     }
 
-    /* Create server socket first */
     int fd = create_server_socket();
     if (fd < 0) return;
 
     s_server_fd = fd;
     s_running   = true;
 
-    /* Create the thread — it will run until http_server_stop() */
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 0x10000);
@@ -437,70 +356,47 @@ void http_server_start(void)
     pthread_create(&s_thread, &attr, http_thread_func, NULL);
     s_thread_alive = true;
     pthread_attr_destroy(&attr);
-
-    log_msg("http_server_start: OK");
 }
 
 void http_server_stop(void)
 {
     s_running = false;
 
-    /* Shutdown client to unblock handle_request */
     if (s_client_fd >= 0) {
         shutdown(s_client_fd, SHUT_RDWR);
     }
 
-    /* Close server socket to unblock select */
     if (s_server_fd >= 0) {
         int fd = s_server_fd;
         s_server_fd = -1;
         close(fd);
     }
 
-    /* Wait for thread to exit. The thread is detached, so its resources
-     * are auto-reclaimed when it exits. We do NOT call pthread_join()
-     * because that can cause 2168-0002 if the thread is still in a
-     * blocking syscall on Horizon OS. */
     if (s_thread_alive) {
         for (int i = 0; i < 50 && s_thread_alive; i++) {
-            svcSleepThread(100000000ULL);  /* 100ms, up to 5s */
-        }
-        if (s_thread_alive) {
-            log_msg("http_server_stop: thread did not exit in 5s");
+            svcSleepThread(100000000ULL);
         }
     }
 }
 
 void http_server_restart(void)
 {
-    /* Shutdown current client if any — unblocks handle_request */
     if (s_client_fd >= 0) {
         shutdown(s_client_fd, SHUT_RDWR);
     }
 
-    /* Close old server socket */
     if (s_server_fd >= 0) {
         int old_fd = s_server_fd;
-        s_server_fd = -1;   /* Thread sees -1 → waits instead of selecting */
+        s_server_fd = -1;
         close(old_fd);
-
-        /* Give lwIP time to fully clean up the old socket's internal state.
-         * Without this delay, creating a new socket immediately can sometimes
-         * get the same fd number, causing select() state confusion. */
-        svcSleepThread(100000000ULL);  /* 100ms */
+        svcSleepThread(100000000ULL);
     }
 
-    /* Create new server socket */
     int new_fd = create_server_socket();
-    if (new_fd < 0) {
-        log_msg("http_server_restart: failed to create new socket");
-        return;
-    }
+    if (new_fd < 0) return;
 
-    /* Set the new fd — thread picks it up on next iteration (within 500ms) */
     s_server_fd = new_fd;
 
-    /* If thread died somehow (shouldn't happen), create a new one */
     if (!s_thread_alive) {
         s_running = true;
         pthread_attr_t attr;
@@ -510,15 +406,7 @@ void http_server_restart(void)
         pthread_create(&s_thread, &attr, http_thread_func, NULL);
         s_thread_alive = true;
         pthread_attr_destroy(&attr);
-        log_msg("http_server_restart: thread recreated");
     }
-
-    log_msg("http_server_restart: OK");
-}
-
-u32 http_server_get_loop_count(void)
-{
-    return s_thread_loop_count;
 }
 
 bool http_server_is_running(void)

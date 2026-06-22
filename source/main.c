@@ -22,6 +22,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include "pctl_handler.h"
+#include "http_server.h"
 
 // ---- Constants ----
 #define PT_DAY_NOLIMIT 0xFFFFu
@@ -201,7 +203,15 @@ static Result pctl_play_timer_set_days(const u16 days_min[7])
         }
     }
 
-    return serviceDispatchIn(pctlGetServiceSession_Service(), 195101, c);
+    Result rc = serviceDispatchIn(pctlGetServiceSession_Service(), 195101, c);
+
+    /* 设置完时间限额后启用限制，让倒计时真正开始 */
+    if (R_SUCCEEDED(rc)) {
+        Service *srv = pctlGetServiceSession_Service();
+        if (srv) serviceDispatch(srv, 1200);
+    }
+
+    return rc;
 }
 
 static Result pctl_play_timer_set_uniform(u16 minutes)
@@ -737,6 +747,12 @@ int main(int argc, char **argv)
 {
     consoleInit(NULL);
 
+    // Initialize network (NRO uses Default initializer)
+    socketInitializeDefault();
+
+    // Start HTTP server (Web UI on port 8081)
+    http_server_start();
+
     // Show splash immediately
     consoleClear();
     printf("\n");
@@ -776,12 +792,14 @@ int main(int argc, char **argv)
 
         if (has_pin && system_pin_len > 0) {
             // System PIN exists — require user to enter it
-            if (!pinEntryScreen(system_pin, system_pin_len)) {
-                // Wrong PIN or user chose to exit
-                if (R_SUCCEEDED(pctl_rc)) pctlExit();
-                consoleExit(NULL);
-                return 0;
-            }
+        if (!pinEntryScreen(system_pin, system_pin_len)) {
+            // Wrong PIN or user chose to exit
+            http_server_stop();
+            if (R_SUCCEEDED(pctl_rc)) pctlExit();
+            socketExit();
+            consoleExit(NULL);
+            return 0;
+        }
         } else {
             // No system PIN set — use default fallback password
             consoleClear();
@@ -796,7 +814,9 @@ int main(int argc, char **argv)
             svcSleepThread(1500000000ULL);  // 1.5 sec
 
             if (!pinEntryScreen(DEFAULT_PIN, strlen(DEFAULT_PIN))) {
+                http_server_stop();
                 if (R_SUCCEEDED(pctl_rc)) pctlExit();
+                socketExit();
                 consoleExit(NULL);
                 return 0;
             }
@@ -866,7 +886,9 @@ int main(int argc, char **argv)
         svcSleepThread(50000000ULL);
     }
 
+    http_server_stop();
     if (R_SUCCEEDED(pctl_rc)) pctlExit();
+    socketExit();
     consoleExit(NULL);
     return 0;
 }
