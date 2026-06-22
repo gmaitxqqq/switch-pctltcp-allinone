@@ -202,15 +202,7 @@ Result pctl_set_settings(const PlayTimerSettings *settings)
 
     Service *srv = pctlGetServiceSession_Service();
     if (!srv) return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
-    Result rc = serviceDispatchIn(srv, 195101, c);
-
-    /* 设置完时间限额后启用限制，让倒计时真正开始 */
-    if (R_SUCCEEDED(rc)) {
-        Result rc2 = pctl_enable_restriction();
-        (void)rc2;  /* 忽略错误，设置已成功 */
-    }
-
-    return rc;
+    return serviceDispatchIn(srv, 195101, c);
 }
 
 /* ------------------------------------------------------------------ */
@@ -260,10 +252,9 @@ Result pctl_set_day_limit_minutes(int day, u32 minutes)
         val = (u16)minutes;
     }
 
-    if (settings.raw[0] == 0) {
-        settings.raw[0] = 0x0101;
-        settings.raw[1] = 0x0001;
-    }
+    /* Always ensure header is valid and restriction is enabled */
+    settings.raw[0] = 0x0101;
+    settings.raw[1] = (val != PT_DAY_NOLIMIT) ? 0x0001 : 0x0000;
 
     settings.raw[PCTL_DAY_FLAG_OFFSET(day)]    = (val != PT_DAY_NOLIMIT) ? 0x0100 : 0x0000;
     settings.raw[PCTL_DAY_MINUTES_OFFSET(day)] = val;
@@ -369,21 +360,4 @@ Result pctl_reset_play_time(void)
     if (R_FAILED(rc)) return rc;
 
     return 0;
-}
-
-/* ------------------------------------------------------------------ */
-/* Enable restriction (IPC cmd 1200)                                  */
-/* Must be called after setting time limits, otherwise the timer won't  */
-/* start counting down.                                               */
-/* ------------------------------------------------------------------ */
-Result pctl_enable_restriction(void)
-{
-    if (!s_initialized)
-        return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
-
-    Service *srv = pctlGetServiceSession_Service();
-    if (!srv)
-        return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
-
-    return serviceDispatch(srv, 1200);
 }

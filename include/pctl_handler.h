@@ -68,7 +68,6 @@ Result pctl_get_daily_limit_minutes(u32 *minutes);
 
 int  pctl_get_today_day(void);
 Result pctl_reset_play_time(void);
-Result pctl_enable_restriction(void);
 
 /* ------------------------------------------------------------------ */
 /* Timezone (used by sysmodule context; NRO can ignore)             */
