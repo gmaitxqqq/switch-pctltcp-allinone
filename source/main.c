@@ -205,12 +205,6 @@ static Result pctl_play_timer_set_days(const u16 days_min[7])
 
     Result rc = serviceDispatchIn(pctlGetServiceSession_Service(), 195101, c);
 
-    /* 设置完时间限额后启用限制，让倒计时真正开始 */
-    if (R_SUCCEEDED(rc)) {
-        Service *srv = pctlGetServiceSession_Service();
-        if (srv) serviceDispatch(srv, 1200);
-    }
-
     return rc;
 }
 

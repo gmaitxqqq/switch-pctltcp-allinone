@@ -129,8 +129,6 @@ static void api_allow(int fd, const char *body)
         if (R_SUCCEEDED(rc)) {
             pctl_stop_play_timer();
             pctl_start_play_timer();
-            /* 设置完时间后启用限制，让倒计时真正开始 */
-            pctl_enable_restriction();
         }
     }
 
