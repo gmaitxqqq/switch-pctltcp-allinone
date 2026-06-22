@@ -859,7 +859,9 @@ int main(int argc, char **argv)
         printf("   pctl service initialized OK.\n\n");
         consoleFlush();
 
-        // ---- PIN Verification Gate ----
+        // ---- PIN Verification DISABLED for testing ----
+        // TODO: re-enable before release
+        #if 0
         // Try to read the system PIN
         char system_pin[32] = {0};
         u32 system_pin_len = 0;
@@ -902,6 +904,9 @@ int main(int argc, char **argv)
                 return 0;
             }
         }
+        #endif
+        printf("   PIN check disabled (test mode).\n\n");
+        consoleFlush();
     }
 
     int cursor = 0;
@@ -970,8 +975,6 @@ int main(int argc, char **argv)
     }
 
     http_server_stop();
-    /* Give the system time to fully clean up threads/sockets */
-    svcSleepThread(500000000ULL);
     if (R_SUCCEEDED(pctl_rc)) pctl_exit();
     socketExit();
     consoleExit(NULL);

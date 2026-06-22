@@ -32,7 +32,7 @@ Result pctl_set_restriction_enabled(bool enable);
 static volatile int  s_server_fd    = -1;
 static volatile bool s_running      = false;
 static Thread       s_thread;
-static volatile bool s_thread_exited = false;
+static volatile bool s_thread_created = false;
 
 /* ------------------------------------------------------------------ */
 /* HTTP helpers                                                        */
@@ -325,15 +325,12 @@ static void http_thread_func(void *arg)
         FD_SET(fd, &rfds);
         struct timeval tv;
         tv.tv_sec  = 0;
-        tv.tv_usec = 500000;
+        tv.tv_usec = 200000;  /* 200ms - check s_running frequently */
 
         int ret = select(fd + 1, &rfds, NULL, NULL, &tv);
+        if (!s_running) break;  /* check right after select returns */
         if (ret <= 0) {
             if (s_server_fd != fd) continue;
-            if (ret < 0) {
-                svcSleepThread(200000000ULL);
-                continue;
-            }
             continue;
         }
 
@@ -353,7 +350,7 @@ static void http_thread_func(void *arg)
         }
     }
 
-    s_thread_exited = true;
+    /* Thread is exiting — do NOT call threadClose here, main will do it */
 }
 
 /* ------------------------------------------------------------------ */
@@ -390,7 +387,6 @@ static int create_server_socket(void)
 void http_server_start(void)
 {
     if (s_running) {
-        /* Already running, just make sure socket is valid */
         if (s_server_fd < 0) {
             int fd = create_server_socket();
             if (fd >= 0) s_server_fd = fd;
@@ -401,19 +397,35 @@ void http_server_start(void)
     int fd = create_server_socket();
     if (fd < 0) return;
 
-    s_server_fd    = fd;
-    s_running      = true;
-    s_thread_exited = false;
+    s_server_fd      = fd;
+    s_running        = true;
+    s_thread_created = false;
 
-    threadCreate(&s_thread, http_thread_func, NULL, NULL, HTTP_THREAD_STACK_SIZE, 0x2C, -2);
-    threadStart(&s_thread);
+    Result rc = threadCreate(&s_thread, http_thread_func, NULL, NULL,
+                             HTTP_THREAD_STACK_SIZE, 0x2C, -2);
+    if (R_FAILED(rc)) {
+        close(fd);
+        s_server_fd = -1;
+        s_running   = false;
+        return;
+    }
+    s_thread_created = true;
+
+    rc = threadStart(&s_thread);
+    if (R_FAILED(rc)) {
+        threadClose(&s_thread);
+        s_thread_created = false;
+        close(fd);
+        s_server_fd = -1;
+        s_running   = false;
+    }
 }
 
 void http_server_stop(void)
 {
     s_running = false;
 
-    /* Close server socket to unblock select() in thread */
+    /* Close server socket to unblock select() */
     if (s_server_fd >= 0) {
         int fd = s_server_fd;
         s_server_fd = -1;
@@ -421,9 +433,13 @@ void http_server_stop(void)
         close(fd);
     }
 
-    /* Give thread a moment to notice s_running==false and exit cleanly.
-       Do NOT call threadWaitForExit/threadClose — causes crash on NRO exit. */
-    svcSleepThread(300000000ULL);  /* 300ms */
+    /* Wait for thread to actually exit, then close it.
+       This is REQUIRED — not closing leaks kernel resources and crashes on NRO exit. */
+    if (s_thread_created) {
+        threadWaitForExit(&s_thread);
+        threadClose(&s_thread);
+        s_thread_created = false;
+    }
 }
 
 bool http_server_is_running(void)
