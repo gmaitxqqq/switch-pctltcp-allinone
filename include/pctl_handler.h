@@ -82,7 +82,7 @@ Result pctl_set_restriction_enabled(bool enable);
 
 Result pctl_load_timezone(void);
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 }
 #endif
 

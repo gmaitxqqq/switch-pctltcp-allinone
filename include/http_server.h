@@ -1,7 +1,7 @@
 #ifndef HTTP_SERVER_H
 #define HTTP_SERVER_H
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -22,7 +22,7 @@ void http_server_stop(void);
 void http_server_restart(void);
 bool http_server_is_running(void);
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 }
 #endif
 
