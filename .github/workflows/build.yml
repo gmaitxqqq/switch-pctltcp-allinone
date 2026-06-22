@@ -41,9 +41,42 @@ jobs:
           ls -lh *.nro 2>/dev/null || echo "No .nro found"
           ls -lh *.elf 2>/dev/null || echo "No .elf found"
 
-      - name: Upload NRO
+      - name: Upload NRO artifact
         uses: actions/upload-artifact@v4
         with:
           name: pctltcp-allinone
           path: pctltcp-allinone.nro
           retention-days: 30
+
+      - name: Create/Update Release with NRO
+        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: PCTL All-in-One (latest build)
+          body: |
+            # PCTL All-in-One - 最新构建
+
+            自动从最新 master 分支构建。
+
+            ## 功能
+            - 家长控制时间限额设置（控制台 + Web UI）
+            - 中文 Web 界面（手机/PC 浏览器访问 `http://<Switch-IP>:8081`）
+            - 一键启用/禁用家长控制限制（Web UI 滑动开关 + 控制台菜单）
+            - 修复了"设置时间但倒计时不启动"的问题（raw[1]=0x0001 启用标志）
+
+            ## 使用方法
+            1. 下载 `pctltcp-allinone.nro`
+            2. 放到 Switch 的 SD 卡 `/switch/` 目录
+            3. 通过 Homebrew Launcher 启动
+            4. 屏幕会显示 Switch IP，用手机/PC 浏览器访问 `http://<IP>:8081`
+
+            ## 构建信息
+            - Commit: ${{ github.sha }}
+            - Branch: ${{ github.ref_name }}
+            - Build time: ${{ github.run_started_at }}
+          files: pctltcp-allinone.nro
+          prerelease: true
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
