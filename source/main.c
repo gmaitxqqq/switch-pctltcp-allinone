@@ -66,8 +66,8 @@ typedef struct {
 
 static Result pctl_ops_reinit(void)
 {
-    pctlExit();
-    return pctlInitialize();
+    pctl_exit();
+    return pctl_init();
 }
 
 static void pctl_status_fetch(PctlStatus *out)
@@ -115,9 +115,9 @@ static bool pctl_read_pin(char *pin_out, size_t pin_buf_size, u32 *pin_len_out)
 static Result pctl_set_pin(void)
 {
     // pctlauth applet opens its own pctl session, so close/reopen around it
-    pctlExit();
+    pctl_exit();
     Result rc = pctlauthRegisterPasscode();
-    pctlInitialize();
+    pctl_init();
     return rc;
 }
 
@@ -774,12 +774,14 @@ static void menuClearPlayTimer(void)
 
 static void menuToggleRestriction(void)
 {
-    /* Use a single pctl init scope for the entire operation */
-    Result rc = pctl_init();
     bool enabled = false;
+    Result rc = 0;
 
-    if (R_SUCCEEDED(rc)) {
+    /* Main thread already initialized pctl at startup */
+    if (pctl_is_initialized()) {
         pctlIsRestrictionEnabled(&enabled);
+    } else {
+        rc = MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
     }
 
     consoleClear();
@@ -814,10 +816,6 @@ static void menuToggleRestriction(void)
         consoleFlush();
         svcSleepThread(10000000ULL);
     }
-
-    /* Clean up pctl - only if we initialized it */
-    if (R_SUCCEEDED(rc))
-        pctl_exit();
 }
 
 // ---- Main Menu ----
@@ -848,8 +846,8 @@ int main(int argc, char **argv)
     // Initialize pad
     initPad();
 
-    // Initialize pctl service
-    Result pctl_rc = pctlInitialize();
+    // Initialize pctl service (using our thread-safe wrapper)
+    Result pctl_rc = pctl_init();
 
     if (R_FAILED(pctl_rc)) {
         printf("\n   !! pctl init failed: 0x%08X\n", (unsigned)pctl_rc);
@@ -877,7 +875,7 @@ int main(int argc, char **argv)
             // Wrong PIN or user chose to exit
             http_server_stop();
             svcSleepThread(500000000ULL);
-            if (R_SUCCEEDED(pctl_rc)) pctlExit();
+            if (R_SUCCEEDED(pctl_rc)) pctl_exit();
             socketExit();
             consoleExit(NULL);
             return 0;
@@ -898,7 +896,7 @@ int main(int argc, char **argv)
             if (!pinEntryScreen(DEFAULT_PIN, strlen(DEFAULT_PIN))) {
                 http_server_stop();
                 svcSleepThread(500000000ULL);
-                if (R_SUCCEEDED(pctl_rc)) pctlExit();
+                if (R_SUCCEEDED(pctl_rc)) pctl_exit();
                 socketExit();
                 consoleExit(NULL);
                 return 0;
@@ -974,7 +972,7 @@ int main(int argc, char **argv)
     http_server_stop();
     /* Give the system time to fully clean up threads/sockets */
     svcSleepThread(500000000ULL);
-    if (R_SUCCEEDED(pctl_rc)) pctlExit();
+    if (R_SUCCEEDED(pctl_rc)) pctl_exit();
     socketExit();
     consoleExit(NULL);
     return 0;

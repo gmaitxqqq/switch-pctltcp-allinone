@@ -79,8 +79,9 @@ static void api_status(int fd)
     int today = 0;
     bool restriction_enabled = false;
 
-    Result rc = pctl_init();
-    if (R_SUCCEEDED(rc)) {
+    /* Main thread already initialized pctl; just call functions directly.
+       Each function is protected by mutex internally. */
+    if (pctl_is_initialized()) {
         pctl_get_remaining_time(&remaining_ns);
         pctl_get_daily_limit_minutes(&daily_limit);
         remaining_min = (remaining_ns == 0) ? 0u :
@@ -89,7 +90,6 @@ static void api_status(int fd)
         played_min    = (daily_limit > remaining_min) ? (daily_limit - remaining_min) : 0;
         today = pctl_get_today_day();
         pctlIsRestrictionEnabled(&restriction_enabled);
-        pctl_exit();
     }
 
     char json[512];
@@ -111,14 +111,13 @@ static void api_allow(int fd, const char *body)
         allow_min = atoi(p + 8);
     }
 
-    Result rc = pctl_init();
-    if (R_FAILED(rc)) {
-        pctl_exit();
-        http_send(fd, "200 OK", "application/json", "{\"success\":0,\"error\":\"pctl_init_failed\"}");
+    if (!pctl_is_initialized()) {
+        http_send(fd, "200 OK", "application/json", "{\"success\":0,\"error\":\"pctl_not_init\"}");
         return;
     }
 
     int today = pctl_get_today_day();
+    Result rc = 0;
 
     if (allow_min == 0) {
         rc = pctl_set_day_limit_minutes(today, 0);
@@ -137,8 +136,6 @@ static void api_allow(int fd, const char *body)
         }
     }
 
-    pctl_exit();
-
     char json[128];
     snprintf(json, sizeof(json), "{\"success\":%d}", R_SUCCEEDED(rc) ? 1 : 0);
     http_send(fd, "200 OK", "application/json", json);
@@ -146,27 +143,22 @@ static void api_allow(int fd, const char *body)
 
 static void api_toggle_restriction(int fd)
 {
-    /* Use a single init scope for all pctl operations */
-    Result rc = pctl_init();
-    if (R_FAILED(rc)) {
+    if (!pctl_is_initialized()) {
         http_send(fd, "200 OK", "application/json",
-                  "{\"success\":0,\"error\":\"pctl_init_failed\"}");
+                  "{\"success\":0,\"error\":\"pctl_not_init\"}");
         return;
     }
 
     bool enabled = false;
     pctlIsRestrictionEnabled(&enabled);
 
-    /* Call our custom set function (it does its own reinit inside) */
-    rc = pctl_set_restriction_enabled(!enabled);
+    Result rc = pctl_set_restriction_enabled(!enabled);
 
     /* Read back actual state after setting */
     bool new_enabled = enabled;
     if (R_SUCCEEDED(rc)) {
         pctlIsRestrictionEnabled(&new_enabled);
     }
-
-    pctl_exit();
 
     char json[128];
     snprintf(json, sizeof(json),
@@ -421,6 +413,7 @@ void http_server_stop(void)
 {
     s_running = false;
 
+    /* Close server socket to unblock select() in thread */
     if (s_server_fd >= 0) {
         int fd = s_server_fd;
         s_server_fd = -1;
@@ -428,19 +421,9 @@ void http_server_stop(void)
         close(fd);
     }
 
-    /* Wait for thread to finish with generous timeout */
-    if (!s_thread_exited) {
-        for (int i = 0; i < 100 && !s_thread_exited; i++) {
-            svcSleepThread(100000000ULL);  /* 100ms x 100 = 10s max */
-        }
-    }
-
-    /* Force-join the thread if still alive */
-    if (!s_thread_exited) {
-        threadWaitForExit(&s_thread);
-        threadClose(&s_thread);
-        s_thread_exited = true;
-    }
+    /* Give thread a moment to notice s_running==false and exit cleanly.
+       Do NOT call threadWaitForExit/threadClose — causes crash on NRO exit. */
+    svcSleepThread(300000000ULL);  /* 300ms */
 }
 
 bool http_server_is_running(void)
