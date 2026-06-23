@@ -327,7 +327,26 @@ Result pctl_reset_play_time(void)
 
 /* ------------------------------------------------------------------ */
 /* Restriction enable/disable                                          */
+/*                                                                    */
+/* IMPORTANT: raw[1] in PlayTimerSettings is the "time limit enabled"  */
+/* flag. This is DIFFERENT from pctlIsRestrictionEnabled() (cmd 1031), */
+/* which reads the system-level parental control toggle.               */
+/*                                                                    */
+/* We must read/write raw[1] directly, NOT pctlIsRestrictionEnabled(), */
+/* otherwise the toggle shows wrong state after disabling.             */
 /* ------------------------------------------------------------------ */
+
+Result pctl_get_restriction_enabled(bool *enabled)
+{
+    if (!enabled) return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+
+    PlayTimerSettings settings;
+    Result rc = pctl_get_settings(&settings);
+    if (R_FAILED(rc)) return rc;
+
+    *enabled = (settings.raw[1] == 0x0001);
+    return 0;
+}
 
 Result pctl_set_restriction_enabled(bool enable)
 {

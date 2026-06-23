@@ -779,7 +779,7 @@ static void menuToggleRestriction(void)
 
     /* Main thread already initialized pctl at startup */
     if (pctl_is_initialized()) {
-        pctlIsRestrictionEnabled(&enabled);
+        pctl_get_restriction_enabled(&enabled);
     } else {
         rc = MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
     }

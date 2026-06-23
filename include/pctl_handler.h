@@ -70,10 +70,14 @@ int  pctl_get_today_day(void);
 Result pctl_reset_play_time(void);
 
 /* ------------------------------------------------------------------ */
-/* Restriction enable/disable (raw[1] flag)                        */
+/* Restriction enable/disable (raw[1] flag in PlayTimerSettings)       */
+/*                                                                    */
+/* This is the "time limit enabled" flag, NOT the same as              */
+/* pctlIsRestrictionEnabled() which reads system-level pctl state.     */
+/* Read and write must both use raw[1] for consistency.                */
 /* ------------------------------------------------------------------ */
-/* Note: use libnx official pctlIsRestrictionEnabled() to read.   */
-/* This function only handles writing the flag.                      */
+
+Result pctl_get_restriction_enabled(bool *enabled);
 Result pctl_set_restriction_enabled(bool enable);
 
 /* ------------------------------------------------------------------ */
