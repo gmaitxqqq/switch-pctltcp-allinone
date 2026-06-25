@@ -204,20 +204,38 @@ Result pctl_set_settings(const PlayTimerSettings *settings)
 
 /* ------------------------------------------------------------------ */
 /* PIN verification (cmd 1)                                            */
+/*                                                                    */
+/* VerifyPin expects the PIN as a buffer of raw digit values           */
+/* (0-9 per byte), NOT ASCII characters and NOT a u32.                 */
+/* Example: PIN "1234" -> buffer {0x01, 0x02, 0x03, 0x04}            */
 /* ------------------------------------------------------------------ */
 
 Result pctl_verify_pin(const char *pin)
 {
-    if (!pin || strlen(pin) == 0)
+    if (!pin || strlen(pin) == 0 || strlen(pin) > 8)
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
 
-    /* pctl VerifyPin expects a u32 PIN code (4 digits, as u32) */
-    u32 pin_code = (u32)atoi(pin);
+    u32 pin_len = (u32)strlen(pin);
+
+    /* Convert ASCII PIN to raw digit bytes (0-9 per byte) */
+    u8 pin_digits[8] = {0};
+    for (u32 i = 0; i < pin_len; i++) {
+        if (pin[i] < '0' || pin[i] > '9')
+            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+        pin_digits[i] = (u8)(pin[i] - '0');
+    }
 
     mutexLock(&s_pctl_mutex);
     Service *srv = pctl_srv();
-    Result rc = srv ? serviceDispatchIn(srv, 1, pin_code)
-                    : MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+    Result rc = MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+
+    if (srv) {
+        /* VerifyPin (cmd 1): PIN passed as input buffer */
+        rc = serviceDispatch(srv, 1,
+            .buffer_attrs = { SfBufferAttr_HipcPointer | SfBufferAttr_In },
+            .buffers      = { { pin_digits, pin_len } });
+    }
+
     mutexUnlock(&s_pctl_mutex);
     return rc;
 }
