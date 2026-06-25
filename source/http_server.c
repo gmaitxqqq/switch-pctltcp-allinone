@@ -188,9 +188,10 @@ static void api_verify_pin(int fd, const char *body)
                  "{\"success\":1,\"restriction_enabled\":%s}",
                  R_SUCCEEDED(rc2) ? "true" : "false");
     } else {
+        /* Include the actual Result code for debugging */
         snprintf(json, sizeof(json),
-                 "{\"success\":0,\"error\":\"invalid_pin\",\"rc\":%d}",
-                 (int)rc);
+                 "{\"success\":0,\"error\":\"invalid_pin\",\"rc\":\"0x%08X\"}",
+                 (unsigned)rc);
     }
     http_send(fd, "200 OK", "application/json", json);
 }
@@ -294,7 +295,7 @@ static const char *WEB_HTML =
 "document.getElementById('msg').textContent='PIN验证成功!倒计时已启用';"
 "setTimeout(function(){document.getElementById('msg').textContent='';load();},2000);"
 "}else{"
-"document.getElementById('msg').textContent='PIN错误: '+(d.error||'未知错误');"
+"document.getElementById('msg').textContent='PIN错误: '+(d.error||'未知错误')+' (rc='+d.rc+')';"
 "}"
 "}).catch(()=>{document.getElementById('msg').textContent='错误'});"
 "}"

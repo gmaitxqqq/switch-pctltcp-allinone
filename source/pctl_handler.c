@@ -205,9 +205,15 @@ Result pctl_set_settings(const PlayTimerSettings *settings)
 /* ------------------------------------------------------------------ */
 /* PIN verification (cmd 1)                                            */
 /*                                                                    */
-/* VerifyPin expects the PIN as a buffer of raw digit values           */
-/* (0-9 per byte), NOT ASCII characters and NOT a u32.                 */
-/* Example: PIN "1234" -> buffer {0x01, 0x02, 0x03, 0x04}            */
+/* VerifyPin expects the PIN as a u32 value in BCD format:            */
+/*   each nibble (4 bits) stores one decimal digit.                   */
+/*   Example: PIN "1234" -> 0x00001234 (u32)                          */
+/*                                                                    */
+/* IMPORTANT: After each VerifyPin call (success or failure), we      */
+/* re-initialize pctl to clear any session state. Otherwise,          */
+/* subsequent VerifyPin calls may fail even with the correct PIN.     */
+/* The re-init is done OUTSIDE the mutex to avoid deadlock             */
+/* (pctl_init() also acquires s_pctl_mutex internally).                */
 /* ------------------------------------------------------------------ */
 
 Result pctl_verify_pin(const char *pin)
@@ -217,12 +223,12 @@ Result pctl_verify_pin(const char *pin)
 
     u32 pin_len = (u32)strlen(pin);
 
-    /* Convert ASCII PIN to raw digit bytes (0-9 per byte) */
-    u8 pin_digits[8] = {0};
+    /* Convert ASCII PIN to BCD format u32 */
+    u32 pin_bcd = 0;
     for (u32 i = 0; i < pin_len; i++) {
         if (pin[i] < '0' || pin[i] > '9')
             return MAKERESULT(Module_Libnx, LibnxError_BadInput);
-        pin_digits[i] = (u8)(pin[i] - '0');
+        pin_bcd = (pin_bcd << 4) | (u32)(pin[i] - '0');
     }
 
     mutexLock(&s_pctl_mutex);
@@ -230,13 +236,20 @@ Result pctl_verify_pin(const char *pin)
     Result rc = MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
 
     if (srv) {
-        /* VerifyPin (cmd 1): PIN passed as input buffer */
-        rc = serviceDispatch(srv, 1,
-            .buffer_attrs = { SfBufferAttr_HipcPointer | SfBufferAttr_In },
-            .buffers      = { { pin_digits, pin_len } });
+        /* VerifyPin (cmd 1): PIN passed as raw u32 in BCD format */
+        rc = serviceDispatchIn(srv, 1, pin_bcd);
     }
 
+    /* Release mutex BEFORE re-initializing pctl, because pctl_init()
+     * also acquires s_pctl_mutex internally (would deadlock). */
     mutexUnlock(&s_pctl_mutex);
+
+    /* CRITICAL: Re-initialize pctl after VerifyPin to clear session state.
+     * The pctl service may cache state after a failed verification,
+     * causing subsequent calls to fail even with the correct PIN. */
+    pctl_exit();
+    pctl_init();
+
     return rc;
 }
 
