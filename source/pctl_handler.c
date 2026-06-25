@@ -93,8 +93,19 @@ Result pctl_start_play_timer(void)
 {
     mutexLock(&s_pctl_mutex);
     Service *srv = pctl_srv();
-    Result rc = srv ? serviceDispatch(srv, 1451)
-                    : MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+    Result rc = MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+
+    if (srv) {
+        /* Best-effort: enable system-level restriction so the countdown
+         * UI will actually render.  If this fails (e.g. PIN-locked),
+         * we still try to start the timer — the timer may work even
+         * if the on-screen countdown doesn't appear. */
+        Result rc_enable = serviceDispatch(srv, 2);   /* EnableRestriction */
+        (void)rc_enable;  /* intentionally ignored */
+
+        rc = serviceDispatch(srv, 1451);               /* StartPlayTimer    */
+    }
+
     mutexUnlock(&s_pctl_mutex);
     return rc;
 }
