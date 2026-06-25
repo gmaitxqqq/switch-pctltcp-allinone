@@ -182,8 +182,11 @@ static void api_verify_pin(int fd, const char *body)
 
     char json[256];
     if (R_SUCCEEDED(rc)) {
-        /* PIN verified — now also enable restriction so countdown UI works */
-        Result rc2 = pctl_set_restriction_enabled(true);
+        /* PIN verified successfully via cmd 1201.
+         * cmd 1201 temporarily unlocks the restriction.
+         * Now re-enable restriction (cmd 2) and start the play timer (cmd 1451)
+         * so the countdown UI appears on the Switch home screen. */
+        Result rc2 = pctl_start_play_timer();
         snprintf(json, sizeof(json),
                  "{\"success\":1,\"restriction_enabled\":%s}",
                  R_SUCCEEDED(rc2) ? "true" : "false");

@@ -203,17 +203,25 @@ Result pctl_set_settings(const PlayTimerSettings *settings)
 }
 
 /* ------------------------------------------------------------------ */
-/* PIN verification (cmd 1)                                            */
+/* PIN verification                                                    */
 /*                                                                    */
-/* VerifyPin expects the PIN as a u32 value in BCD format:            */
-/*   each nibble (4 bits) stores one decimal digit.                   */
-/*   Example: PIN "1234" -> 0x00001234 (u32)                          */
+/* The pctl service does NOT have a dedicated "verify PIN" command.   */
+/* Instead, we use cmd 1201 (UnlockRestrictionTemporarily) to test   */
+/* the PIN: if it returns success, the PIN is correct (and the        */
+/* restriction is temporarily unlocked).                              */
 /*                                                                    */
-/* IMPORTANT: After each VerifyPin call (success or failure), we      */
-/* re-initialize pctl to clear any session state. Otherwise,          */
-/* subsequent VerifyPin calls may fail even with the correct PIN.     */
-/* The re-init is done OUTSIDE the mutex to avoid deadlock             */
-/* (pctl_init() also acquires s_pctl_mutex internally).                */
+/* To avoid the side effect of actually unlocking the restriction,    */
+/* we re-enable it immediately after a successful verification.       */
+/*                                                                    */
+/* PIN format for cmd 1201:                                           */
+/*   - Input buffer: NUL-terminated ASCII digit string               */
+/*     e.g. PIN "1234" -> buffer {'1','2','3','4','\0'}              */
+/*   - Buffer size: pin_len + 1 (digits + NUL terminator)            */
+/*   - Buffer type: SfBufferAttr_HipcPointer | SfBufferAttr_In       */
+/*                                                                    */
+/* IMPORTANT: After each cmd 1201 call, re-initialize pctl to clear  */
+/* session state, otherwise subsequent calls may fail.                */
+/* The re-init is done OUTSIDE the mutex to avoid deadlock.           */
 /* ------------------------------------------------------------------ */
 
 Result pctl_verify_pin(const char *pin)
@@ -221,30 +229,28 @@ Result pctl_verify_pin(const char *pin)
     if (!pin || strlen(pin) == 0 || strlen(pin) > 8)
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
 
-    u32 pin_len = (u32)strlen(pin);
-
-    /* Convert ASCII PIN to BCD format u32 */
-    u32 pin_bcd = 0;
-    for (u32 i = 0; i < pin_len; i++) {
-        if (pin[i] < '0' || pin[i] > '9')
-            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
-        pin_bcd = (pin_bcd << 4) | (u32)(pin[i] - '0');
-    }
+    /* Build NUL-terminated PIN string for cmd 1201 */
+    char pin_buf[9] = {0};
+    size_t pin_len = strlen(pin);
+    memcpy(pin_buf, pin, pin_len);   /* pin_buf[pin_len] = '\0' already */
 
     mutexLock(&s_pctl_mutex);
     Service *srv = pctl_srv();
     Result rc = MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
 
     if (srv) {
-        /* VerifyPin (cmd 1): PIN passed as raw u32 in BCD format */
-        rc = serviceDispatchIn(srv, 1, pin_bcd);
+        /* UnlockRestrictionTemporarily (cmd 1201)
+         * Input: PIN as NUL-terminated ASCII string in HipcPointer buffer */
+        rc = serviceDispatch(srv, 1201,
+            .buffer_attrs = { SfBufferAttr_HipcPointer | SfBufferAttr_In },
+            .buffers      = { { pin_buf, pin_len + 1 } });
     }
 
     /* Release mutex BEFORE re-initializing pctl, because pctl_init()
      * also acquires s_pctl_mutex internally (would deadlock). */
     mutexUnlock(&s_pctl_mutex);
 
-    /* CRITICAL: Re-initialize pctl after VerifyPin to clear session state.
+    /* Re-initialize pctl after cmd 1201 to clear session state.
      * The pctl service may cache state after a failed verification,
      * causing subsequent calls to fail even with the correct PIN. */
     pctl_exit();
