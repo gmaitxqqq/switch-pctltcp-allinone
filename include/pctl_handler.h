@@ -81,6 +81,12 @@ Result pctl_get_restriction_enabled(bool *enabled);
 Result pctl_set_restriction_enabled(bool enable);
 
 /* ------------------------------------------------------------------ */
+/* PIN verification (cmd 1)                                            */
+/* ------------------------------------------------------------------ */
+
+Result pctl_verify_pin(const char *pin);
+
+/* ------------------------------------------------------------------ */
 /* Timezone (used by sysmodule context; NRO can ignore)             */
 /* ------------------------------------------------------------------ */
 

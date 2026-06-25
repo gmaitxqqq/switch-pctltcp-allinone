@@ -202,6 +202,26 @@ Result pctl_set_settings(const PlayTimerSettings *settings)
 }
 
 /* ------------------------------------------------------------------ */
+/* PIN verification (cmd 1)                                            */
+/* ------------------------------------------------------------------ */
+
+Result pctl_verify_pin(const char *pin)
+{
+    if (!pin || strlen(pin) == 0)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+
+    /* pctl VerifyPin expects a u32 PIN code (4 digits, as u32) */
+    u32 pin_code = (u32)atoi(pin);
+
+    mutexLock(&s_pctl_mutex);
+    Service *srv = pctl_srv();
+    Result rc = srv ? serviceDispatchIn(srv, 1, pin_code)
+                    : MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+    mutexUnlock(&s_pctl_mutex);
+    return rc;
+}
+
+/* ------------------------------------------------------------------ */
 /* Day-level helpers                                                   */
 /* ------------------------------------------------------------------ */
 

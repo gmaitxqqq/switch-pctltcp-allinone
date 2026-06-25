@@ -168,6 +168,33 @@ static void api_toggle_restriction(int fd)
     http_send(fd, "200 OK", "application/json", json);
 }
 
+static void api_verify_pin(int fd, const char *body)
+{
+    const char *p = strstr(body, "pin=");
+    if (!p) {
+        http_send(fd, "200 OK", "application/json",
+                  "{\"success\":0,\"error\":\"missing_pin\"}");
+        return;
+    }
+
+    const char *pin = p + 4;
+    Result rc = pctl_verify_pin(pin);
+
+    char json[256];
+    if (R_SUCCEEDED(rc)) {
+        /* PIN verified — now also enable restriction so countdown UI works */
+        Result rc2 = pctl_set_restriction_enabled(true);
+        snprintf(json, sizeof(json),
+                 "{\"success\":1,\"restriction_enabled\":%s}",
+                 R_SUCCEEDED(rc2) ? "true" : "false");
+    } else {
+        snprintf(json, sizeof(json),
+                 "{\"success\":0,\"error\":\"invalid_pin\",\"rc\":%d}",
+                 (int)rc);
+    }
+    http_send(fd, "200 OK", "application/json", json);
+}
+
 /* Embedded Web UI (中文) */
 static const char *WEB_HTML =
 "<!DOCTYPE html>"
@@ -219,6 +246,12 @@ static const char *WEB_HTML =
 "</div>"
 "</div>"
 "<div class='box'>"
+"<div class='lbl'>PIN 验证 (解绑小程序后需要)</div>"
+"<input type='password' id='pin' placeholder='4位PIN' maxlength='4' style='width:80px;font-size:1.5em;text-align:center;padding:8px;border:none;border-radius:8px;background:rgba(255,255,255,0.15);color:#fff'>"
+"<br>"
+"<button onclick='verifyPin()' style='margin-top:8px'>验证 PIN 并启用倒计时</button>"
+"</div>"
+"<div class='box'>"
 "<div class='lbl'>追加/减少时间 (分钟)</div>"
 "<input type='number' id='min' value='30' min='-1440' max='1440'>"
 "<br>"
@@ -250,6 +283,19 @@ static const char *WEB_HTML =
 "fetch('/api/allow',{method:'POST',body:'minutes='+m}).then(r=>r.json()).then(d=>{"
 "document.getElementById('msg').textContent=d.success?'完成!':'失败';"
 "setTimeout(function(){document.getElementById('msg').textContent='';load();},1200);"
+"}).catch(()=>{document.getElementById('msg').textContent='错误'});"
+"}"
+"function verifyPin(){"
+"var pin=document.getElementById('pin').value.trim();"
+"if(!pin){document.getElementById('msg').textContent='请输入PIN';return;}"
+"document.getElementById('msg').textContent='验证中...';"
+"fetch('/api/verify-pin',{method:'POST',body:'pin='+pin}).then(r=>r.json()).then(d=>{"
+"if(d.success){"
+"document.getElementById('msg').textContent='PIN验证成功!倒计时已启用';"
+"setTimeout(function(){document.getElementById('msg').textContent='';load();},2000);"
+"}else{"
+"document.getElementById('msg').textContent='PIN错误: '+(d.error||'未知错误');"
+"}"
 "}).catch(()=>{document.getElementById('msg').textContent='错误'});"
 "}"
 "function toggleRestriction(){"
@@ -295,6 +341,8 @@ static void handle_request(int fd)
         api_allow(fd, body ? body : "");
     } else if (strcmp(path, "/api/toggle") == 0 && strcmp(method, "POST") == 0) {
         api_toggle_restriction(fd);
+    } else if (strcmp(path, "/api/verify-pin") == 0 && strcmp(method, "POST") == 0) {
+        api_verify_pin(fd, body ? body : "");
     } else {
         http_send(fd, "404 Not Found", "application/json", "{\"error\":\"not found\"}");
     }
