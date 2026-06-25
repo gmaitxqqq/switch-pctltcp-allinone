@@ -96,7 +96,7 @@ static void pctl_status_fetch(PctlStatus *out)
 
 // Read system PIN string via GetPinCode (cmd 1208)
 // Returns true if PIN was read successfully
-static bool pctl_read_pin(char *pin_out, size_t pin_buf_size, u32 *pin_len_out)
+static bool pctl_read_pin(char *pin_out, size_t pin_buf_size, u32 *pin_len_out) __attribute__((unused))
 {
     pctl_ops_reinit();
     Service *srv = pctlGetServiceSession_Service();
@@ -306,7 +306,7 @@ static void waitForKey(void)
 // Each digit: 0-9, use Up/Down to change
 // A = confirm, B = exit app
 
-static bool pinEntryScreen(const char *expected_pin, u32 pin_length)
+static bool pinEntryScreen(const char *expected_pin, u32 pin_length) __attribute__((unused))
 {
     char input[MAX_PIN_LEN + 1];
     memset(input, '0', pin_length);

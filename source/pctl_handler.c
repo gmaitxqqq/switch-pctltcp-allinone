@@ -7,6 +7,7 @@
  */
 
 #include "pctl_handler.h"
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
